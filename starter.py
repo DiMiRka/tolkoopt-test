@@ -1,6 +1,6 @@
 """Учебный фрагмент для тестового задания ТОЛЬКООПТ.
 
-Python 3.10+, только стандартная библиотека. Запуск примера: python starter_1.py
+Python 3.10+, только стандартная библиотека. Запуск примера: python starter.py
 В функции recommend_price намеренно есть ошибки. Исправьте её по правилам ниже.
 sample_fetch_offers имитирует внешний источник: реальные запросы не нужны.
 
@@ -40,18 +40,54 @@ reason (короткая понятная причина). Сохраните и
 """
 
 import asyncio
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
+
+OWN_SELLER = "myshop"
+MAX_DELIVERY_DAYS = 6
+DISCOUNT = Decimal("0.985")
+MAX_DEVIATION = Decimal("0.30")
+CENT = Decimal("0.01")
+
+
+def _result(price, decision, reason):
+    return {"price": price, "decision": decision, "reason": reason}
+
+
+def _is_suitable(offer):
+    days = offer["delivery_days"]
+    return (
+        days is not None
+        and days <= MAX_DELIVERY_DAYS
+        and offer["seller"].casefold() != OWN_SELLER
+    )
 
 
 async def recommend_price(fetch_offers, current_price, min_price, timeout_s=2.0):
-    result = await fetch_offers()
-    prices = [
-        float(offer["price"])
-        for offer in result["offers"]
-        if offer["delivery_days"] <= 6
-    ]
-    price = round(min(prices) * 0.985, 2)
-    return {"price": price, "decision": "APPLY", "reason": "Найдена минимальная цена"}
+    try:
+        result = await asyncio.wait_for(fetch_offers(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return _result(current_price, "HOLD", f"Источник не ответил за {timeout_s} с")
+    except Exception as exc:
+        return _result(current_price, "HOLD", f"Ошибка источника: {type(exc).__name__}")
+
+    if result["status"] != "success":
+        return _result(current_price, "HOLD", f"Статус источника: {result['status']}")
+
+    prices = [offer["price"] for offer in result["offers"] if _is_suitable(offer)]
+    if not prices:
+        return _result(current_price, "HOLD", "Нет подходящих предложений конкурентов")
+
+    candidate = (min(prices) * DISCOUNT).quantize(CENT, rounding=ROUND_DOWN)
+    price = max(candidate, min_price)
+    reason = (
+        "Конкурент ниже минимальной цены, применена минимальная"
+        if candidate < min_price
+        else "Минимальная цена конкурента минус 1,5%"
+    )
+
+    if abs(price - current_price) > current_price * MAX_DEVIATION:
+        return _result(price, "REVIEW", f"{reason}; отклонение от текущей больше 30%, нужна ручная проверка")
+    return _result(price, "APPLY", reason)
 
 
 async def sample_fetch_offers():
